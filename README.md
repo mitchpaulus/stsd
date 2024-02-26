@@ -20,7 +20,7 @@ I want to format of the data on disk to be as simple as possible.
 2. 4 byte: number of day entries
 3. For each day entry:
     - 180 bytes: day format
-4.
+4. 4 byte: number of trends
 
 ### Day format
 
