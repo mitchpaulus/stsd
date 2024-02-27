@@ -9,22 +9,83 @@ It is designed around these principles:
 - Concurrent traffic is extremely low
 - Can do some simple operations using common text processing utilities
 - Compression has to just be "good" enough
-- Data is ordered on disk
 - Data is normally appended
+
+# Operations
+
+## Insert Data
+
+Given:
+    - String trend name
+    - Array of timestamp, value pairs
+
+Pseudocode:
+    - Pull trend definition pages
+    - Lookup trend Id
+    - If Id found:
+
+
+## Get Data by Day Range
+
+Given:
+    - String trend name
+    - Start date
+    - End date
+
+## Get Available Trends
+
+Given:
+    - None
 
 ## Database Format
 
+Database is broken up into pages of 4 kB.
+First page is configuration.
+Next pages are day type pages.
+Next pages are trend definition pages.
+Next pages are Index pages.
+Next pages are data pages.
+
 I want to format of the data on disk to be as simple as possible.
 
-1. 1 byte version number
-2. 4 byte: number of day entries
-3. For each day entry:
-    - 180 bytes: day format
-4. 4 byte: number of trends
+### Configuration Page
+
+1. 2 byte: version number
+2. 2 byte: page size in bytes
+3. 2 byte: Initial year (default 2000)
+4. 4 byte: number of day entries pages
+5. 4 byte: number of trends pages
+6. 4 byte: number of Index pages
+
+### Day Type Page
+
+1. For each day entry:
+    - 180 bytes: day format. Bit string of 1440 bits, 1 for each minute of the day.
+
+### Trend Definition Page
+
+1. For each trend:
+    - 4 byte: trend Id (Once set, should never change)
+    - 256 bytes: trend name, UTF-8 encoded, padded with null bytes
+
+### Index Page
+
+Each index record is:
+
+1. 4 byte: trend Id
+2. 4 byte: page index
+3. 2 byte: start day Id
+4. 2 byte: end day Id (inclusive)
 
 ### Day format
 
 Can either be a dictionary/run length encoding, or Huffman coding.
+
+Begins with:
+    - 2 byte day Id
+    - 2 byte time Id (0 indexed)
+
+Then followed with either a dictionary/run length encoding, or Huffman coding.
 
 #### Dictionary/Run Length Encoding
 

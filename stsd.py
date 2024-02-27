@@ -2,6 +2,120 @@ import math
 import heapq
 from collections import defaultdict, Counter
 from typing import Optional
+import sys
+
+class DataIndex:
+    def __init__(self, trend_id: int, page_index: int, start_day: int, end_day: int) -> None:
+        self.trend_id = trend_id
+        self.page_index = page_index
+        self.start_day = start_day
+        self.end_day = end_day
+
+def init(filepath):
+    # Fail if file already exists
+    with open(filepath, 'xb') as file:
+        # Write initial configuration
+        # 1. 2 byte: version number
+        # 2. 2 byte: page size in bytes
+        # 3. 2 byte: Initial year (default 2000)
+        # 4. 4 byte: number of day entries pages
+        # 5. 4 byte: number of trends pages
+        # 6. 4 byte: number of Index pages
+        version = 1
+        page_size = 4096
+        initial_year = 2000
+        num_day_entries_pages = 0
+        num_trends_pages = 0
+        num_index_pages = 0
+
+        file.write(version.to_bytes(2, 'big'))
+        file.write(page_size.to_bytes(2, 'big'))
+        file.write(initial_year.to_bytes(2, 'big'))
+        file.write(num_day_entries_pages.to_bytes(4, 'big'))
+        file.write(num_trends_pages.to_bytes(4, 'big'))
+        file.write(num_index_pages.to_bytes(4, 'big'))
+
+        # Write null bytes to fill the rest of the page
+        file.write(b'\x00' * (page_size - 18))
+
+
+
+def write_data(filepath, trend_name: str, values: list[tuple[str, str]]):
+    # Read first 4096 bytes to get the configuration
+    with open(filepath, 'rb+') as file:
+        configurations = file.read(18)
+
+    page_size = int.from_bytes(configurations[2:4], 'big')
+
+    num_day_entries_pages = int.from_bytes(configurations[6:10], 'big')
+    num_trends_pages = int.from_bytes(configurations[10:14], 'big')
+    num_index_pages = int.from_bytes(configurations[14:18], 'big')
+
+    total_size = page_size * (num_day_entries_pages + num_trends_pages + num_index_pages)
+
+    # Read all the index pages
+    file.seek(page_size)
+
+    all_index_pages = file.read(total_size)
+
+    day_entry_pages = all_index_pages[0:page_size * num_day_entries_pages]
+    trend_pages = all_index_pages[page_size * num_day_entries_pages:page_size * (num_day_entries_pages + num_trends_pages)]
+    index_pages = all_index_pages[page_size * (num_day_entries_pages + num_trends_pages):]
+
+    day_entries = read_day_entry_page(day_entry_pages)
+    trends = read_trend_page(trend_pages)
+    indexes = read_index_page(index_pages)
+    pass
+
+
+def read_day_entry_page(pages: list[bytes]) -> list[list[int]]:
+    pass
+
+def read_trend_page(pages: list[bytes]) -> dict[str, int]:
+    # 1. For each trend:
+    # - 4 byte: trend Id (Once set, should never change)
+    # - 256 bytes: trend name, UTF-8 encoded, padded with null bytes
+    # Zero filled after the last trend record
+    trends = {}
+    pos_in_page = 0
+    for page in pages:
+        while pos_in_page < len(page):
+            trend_id = int.from_bytes(page[pos_in_page:pos_in_page+4], 'big')
+            if trend_id == 0:
+                break
+            pos_in_page += 4
+            trend_name = page[pos_in_page:pos_in_page+256].decode('utf-8').rstrip('\x00')
+            pos_in_page += 256
+
+            trends[trend_name] = trend_id
+    return trends
+
+def read_index_page(pages: list[bytes]) -> list[DataIndex]:
+    # Each index record is:
+    # 1. 4 byte: trend Id
+    # 2. 4 byte: page index
+    # 3. 2 byte: start day Id
+    # 4. 2 byte: end day Id (inclusive)
+    # Null filled after the last index record
+    indexes = []
+
+    pos_in_page = 0
+    for page in pages:
+        while pos_in_page < len(page):
+            trend_id = int.from_bytes(page[pos_in_page:pos_in_page+4], 'big')
+            if trend_id == 0:
+                break
+            pos_in_page += 4
+            page_index = int.from_bytes(page[pos_in_page:pos_in_page+4], 'big')
+            pos_in_page += 4
+            start_day = int.from_bytes(page[pos_in_page:pos_in_page+2], 'big')
+            pos_in_page += 2
+            end_day = int.from_bytes(page[pos_in_page:pos_in_page+2], 'big')
+            pos_in_page += 2
+
+            indexes.append(DataIndex(trend_id, page_index, start_day, end_day))
+
+    return indexes
 
 class Node:
     def __init__(self, char, freq):
@@ -264,6 +378,23 @@ def decode_day_values(encoded_bytes: list[int]) -> list[str]:
 
 
 if __name__ == "__main__":
+    arg_index = 1
+    command = None
+
+    while arg_index < len(sys.argv):
+        if sys.argv[arg_index] == "init":
+            command = "init"
+
+            if arg_index + 1 >= len(sys.argv):
+                print("Error: init requires a file path")
+                sys.exit(1)
+
+            init(sys.argv[arg_index + 1])
+
+            arg_index += 2
+        else:
+            arg_index += 1
+
     test_strings = [
         "hello",
         "hello",
