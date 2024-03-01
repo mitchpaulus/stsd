@@ -3,6 +3,8 @@ import heapq
 from collections import defaultdict, Counter
 from typing import Optional
 import sys
+import mputils
+import datetime
 
 class DataIndex:
     def __init__(self, trend_id: int, page_index: int, start_day: int, end_day: int) -> None:
@@ -39,37 +41,72 @@ def init(filepath):
         file.write(b'\x00' * (page_size - 18))
 
 
-
-def write_data(filepath, trend_name: str, values: list[tuple[str, str]]):
+def write_data(filepath, trend_name: str, values: list[tuple[datetime.datetime, str]]):
     # Read first 4096 bytes to get the configuration
     with open(filepath, 'rb+') as file:
         configurations = file.read(18)
 
     page_size = int.from_bytes(configurations[2:4], 'big')
-
+    init_year = int.from_bytes(configurations[4:6], 'big')
     num_day_entries_pages = int.from_bytes(configurations[6:10], 'big')
     num_trends_pages = int.from_bytes(configurations[10:14], 'big')
     num_index_pages = int.from_bytes(configurations[14:18], 'big')
 
     total_size = page_size * (num_day_entries_pages + num_trends_pages + num_index_pages)
 
-    # Read all the index pages
+    init_nd_date = mputils.fixed_from_gregorian(init_year, 1, 1)
+
     file.seek(page_size)
 
+    # Read all the index pages
     all_index_pages = file.read(total_size)
 
-    day_entry_pages = all_index_pages[0:page_size * num_day_entries_pages]
-    trend_pages = all_index_pages[page_size * num_day_entries_pages:page_size * (num_day_entries_pages + num_trends_pages)]
-    index_pages = all_index_pages[page_size * (num_day_entries_pages + num_trends_pages):]
+    day_entry_pages = []
+    curr_pos = 0
+    for _ in range(num_day_entries_pages):
+        day_entry_pages.append(all_index_pages[curr_pos:curr_pos+page_size])
+        curr_pos += page_size
+
+    trend_pages = []
+    for _ in range(num_trends_pages):
+        trend_pages.append(all_index_pages[curr_pos:curr_pos+page_size])
+        curr_pos += page_size
+
+    index_pages = []
+    for _ in range(num_index_pages):
+        index_pages.append(all_index_pages[curr_pos:curr_pos+page_size])
+        curr_pos += page_size
 
     day_entries = read_day_entry_page(day_entry_pages)
     trends = read_trend_page(trend_pages)
     indexes = read_index_page(index_pages)
-    pass
 
+    if trend_name in trends:
+        trend_id = trends[trend_name]
+    else:
+        trend_id = max(trends.values(), default=0) + 1
+
+    # Group data by day
+    day_grouped = mputils.groupby(values, lambda x: x[0].date())
+
+    # Convert to day values
 
 def read_day_entry_page(pages: list[bytes]) -> list[list[int]]:
-    pass
+    # 1. For each day entry:
+    # - 1 byte: non-zero byte to indicate following 180 bits are good
+    # - 180 bytes: day format. Bit string of 1440 bits, 1 for each minute of the day.
+    # - Null filled after the last day entry
+    day_entries = []
+    for page in pages:
+        pos_in_page = 0
+        while pos_in_page < len(page):
+            if page[pos_in_page] == 0:
+                break
+            pos_in_page += 1
+            day_format = page[pos_in_page:pos_in_page+180]
+            pos_in_page += 180
+            day_entries.append(list(day_format))
+    return day_entries
 
 def read_trend_page(pages: list[bytes]) -> dict[str, int]:
     # 1. For each trend:

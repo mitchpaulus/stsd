@@ -60,13 +60,18 @@ I want to format of the data on disk to be as simple as possible.
 ### Day Type Page
 
 1. For each day entry:
+    - 1 byte: non-zero byte to indicate following 180 bits are good
     - 180 bytes: day format. Bit string of 1440 bits, 1 for each minute of the day.
+
+Zero-padded after last record to page boundary.
 
 ### Trend Definition Page
 
 1. For each trend:
     - 4 byte: trend Id (Once set, should never change)
     - 256 bytes: trend name, UTF-8 encoded, padded with null bytes
+
+One-padded (to allow id to act as zero-index) after last record to page boundary.
 
 ### Index Page
 
@@ -77,12 +82,14 @@ Each index record is:
 3. 2 byte: start day Id
 4. 2 byte: end day Id (inclusive)
 
-### Day format
+Zero-padded after last record to page boundary.
+
+### Data Page Format
 
 Can either be a dictionary/run length encoding, or Huffman coding.
 
 Begins with:
-    - 2 byte day Id
+    - 2 byte day Id (Indexed from Jan 1, of start year, default 2000)
     - 2 byte time Id (0 indexed)
 
 Then followed with either a dictionary/run length encoding, or Huffman coding.
