@@ -86,11 +86,18 @@ Zero-padded after last record to page boundary.
 
 ### Data Page Format
 
-Can either be a dictionary/run length encoding, or Huffman coding.
+List of encoded days.
+Days can be compressed using either be a dictionary/run length encoding, or Huffman coding.
+
+Begins with
+
+- 2 bytes: total number of days in page
+
+For each encoded day:
 
 Begins with:
     - 2 byte day Id (Indexed from Jan 1, of start year, default 2000)
-    - 2 byte time Id (0 indexed)
+    - 2 byte day type Id (0 indexed)
 
 Then followed with either a dictionary/run length encoding, or Huffman coding.
 
@@ -101,6 +108,7 @@ Then followed with either a dictionary/run length encoding, or Huffman coding.
 - For each key:
     - 1 byte: length of key 1
     - n bytes: UTF-8 string key 1
+- 1 byte: number of values
 - For each value:
     - 1 byte: length of run of key n, (implies no run > 255, may need to repeat if run > 255)
     - 1 byte: key n, zero indexed
@@ -114,5 +122,5 @@ Then followed with either a dictionary/run length encoding, or Huffman coding.
     - m bytes: UTF-8 string symbol
     - 1 byte: length of Huffman code (implies no code > 255 bits)
 - o bytes: Huffman codes, padded to byte boundary
-- 2 bytes: number of bytes of data
+- 2 bytes: number of *bits* of data
 - p bytes: data, padded to byte boundary

@@ -6,6 +6,8 @@ import sys
 import mputils
 import datetime
 
+huffman_bytes_for_bytes = 2
+
 class DataIndex:
     def __init__(self, trend_id: int, page_index: int, start_day: int, end_day: int) -> None:
         self.trend_id = trend_id
@@ -77,9 +79,13 @@ def write_data(filepath, trend_name: str, values: list[tuple[datetime.datetime, 
         index_pages.append(all_index_pages[curr_pos:curr_pos+page_size])
         curr_pos += page_size
 
-    day_entries = read_day_entry_page(day_entry_pages)
+    day_entries: list[tuple[int, list[int]]] = [(idx, day) for idx, day in enumerate(read_day_entry_pages(day_entry_pages))]
+    day_entries.sort(key=lambda x: x[1])
+
     trends = read_trend_page(trend_pages)
-    indexes = read_index_page(index_pages)
+    indexes: list[DataIndex] = read_index_page(index_pages)
+
+    indexes_for_trend = [x for x in indexes if x.trend_id == trends[trend_name]]
 
     if trend_name in trends:
         trend_id = trends[trend_name]
@@ -87,11 +93,84 @@ def write_data(filepath, trend_name: str, values: list[tuple[datetime.datetime, 
         trend_id = max(trends.values(), default=0) + 1
 
     # Group data by day
-    day_grouped = mputils.groupby(values, lambda x: x[0].date())
+    day_grouped: dict[datetime.date, list[tuple[datetime.datetime, str]]] = mputils.groupby(values, lambda x: x[0].date())
 
-    # Convert to day values
+    day_entries_to_add = []
 
-def read_day_entry_page(pages: list[bytes]) -> list[list[int]]:
+    for day in day_grouped:
+        # Get the day entry for the day
+        day_type = to_day_entry([x[0] for x in day_grouped[day]])
+        day_index = match_day_entry(day_entries, day_type)
+
+        day_id = day.toordinal() - init_nd_date + 1
+
+        if day_index is None:
+            # Add a new day entry
+            day_entries_to_add.append((day_type, day))
+            day_entries_to_add.append((len(day_entries) + len(day_entries_to_add), day_type))
+
+        encoded_values = encode_day_values([x[1] for x in day_grouped[day]])
+
+        if len(encoded_values) > page_size:
+            raise ValueError("Encoded values too large")
+
+        # Find the index page to write to
+        index_page = None
+        for index in indexes_for_trend:
+            if index.start_day <= day.toordinal() - init_nd_date + 1 <= index.end_day:
+                index_page = index
+                break
+
+
+def to_day_entry(datetime_values: list[datetime.datetime]) -> list[int]:
+    # Convert the datetime values to a list of 1s and 0s
+    day_values = [0] * (1440 // 8)
+
+    for dt in datetime_values:
+        minute = dt.hour * 60 + dt.minute
+        day_values[minute // 8] |= 1 << (minute % 8)
+
+    return day_values
+
+def day_compare(day1: list[int], day2: list[int]) -> int:
+    # Return 0 if the days are equal, -1 if day1 < day2, 1 if day1 > day2
+    index = 0
+
+    while index < len(day1) and index < len(day2):
+        if day1[index] < day2[index]:
+            return -1
+        elif day1[index] > day2[index]:
+            return 1
+        index += 1
+
+    if len(day1) < len(day2):
+        return -1
+    elif len(day1) > len(day2):
+        return 1
+    else:
+        return 0
+
+def match_day_entry(day_entries: list[tuple[int, list[int]]], day_times: list[int]) -> Optional[int]:
+    # list[int] represents the byte array where each bit is a minute of the day
+    # day_times is a list of datetime objects
+    L = 0
+    R = len(day_entries) - 1
+
+    while L <= R:
+        m = math.floor((L + R) / 2)
+        test_entry = day_entries[m][1]
+
+        if day_compare(test_entry, day_times) < 0:
+            L = m + 1
+        elif day_compare(test_entry, day_times) > 0:
+            R = m - 1
+        else:
+            return test_entry[0]
+
+    return None
+
+
+def read_day_entry_pages(pages: list[bytes]) -> list[list[int]]:
     # 1. For each day entry:
     # - 1 byte: non-zero byte to indicate following 180 bits are good
     # - 180 bytes: day format. Bit string of 1440 bits, 1 for each minute of the day.
@@ -241,7 +320,7 @@ def encode_day_values(day_values: list[str]) -> list[int]:
     runs = []
     prev_value = None
     run_length = 0
-    symbol_counts = {}
+    symbol_counts: dict[str, int] = {}
 
     for value in day_values:
         if value != prev_value:
@@ -274,7 +353,9 @@ def encode_day_values(day_values: list[str]) -> list[int]:
             output_bytes.append(len(key))
             output_bytes.extend(list(key.encode('utf-8')))
 
-        # Now RLE the each value
+        output_bytes.append(len(runs))
+
+        # Now RLE each value
         for value, length in runs:
             value_index = keys.index(value)
             # Handle case where run length is greater than 255
@@ -297,7 +378,7 @@ def encode_day_values(day_values: list[str]) -> list[int]:
         #     - m bytes: UTF-8 string symbol
         #     - 1 byte: length of Huffman code (implies no code > 255 bits)
         # - o bytes: Huffman codes, padded to byte boundary
-        # - 2 bytes: number of bytes of data
+        # - 2 bytes: number of *bits* of data
         # - p bytes: data, padded to byte boundary
 
         # First byte is 1 to signal Huffman encoding
@@ -308,7 +389,6 @@ def encode_day_values(day_values: list[str]) -> list[int]:
 
         # Encode the number of keys
         output_bytes.append(len(symbol_counts))
-
 
         root = build_huffman_tree_from_dict(symbol_counts)
         huffman_codes = generate_codes(root)
@@ -326,47 +406,100 @@ def encode_day_values(day_values: list[str]) -> list[int]:
         # Dump all the huffman codes concatenated
         output_bytes.extend(str_to_bytes(''.join(all_codes)))
 
-
         # Encode the data
         text = "\x1E".join(day_values)
+        # Literal string of 1s and 0s
         encoded_text = ''.join(huffman_codes[char] for char in text)
 
-        # Dump the total number of bits, in 3 bytes
-        output_bytes.extend(len(encoded_text).to_bytes(3, 'big'))
+        if len(encoded_text) > 65535:
+            raise ValueError("Encoded text too large")
+
+        # Dump the total number of bytes, in huffman_bytes_for_bytes bytes
+        num_bits = len(encoded_text)
+
+        output_bytes.extend(num_bits.to_bytes(huffman_bytes_for_bytes, 'big'))
         output_bytes.extend(str_to_bytes(encoded_text))
 
         # Encode the symbols
         return output_bytes
 
 
-def decode_day_values(encoded_bytes: list[int]) -> list[str]:
-    encoding_type = encoded_bytes[0]
+def decode_data_page(encoded_bytes: list[int]) -> list[tuple[datetime.datetime, str]]:
+    # List of encoded days.
+    # Days can be compressed using either be a dictionary/run length encoding, or Huffman coding.
+    #
+    # Begins with
+    #
+    # - 2 bytes: total number of days in page
+    #
+    # For each encoded day:
+    #
+    # Begins with:
+    #     - 2 byte day Id (Indexed from Jan 1, of start year, default 2000)
+    #     - 2 byte day type Id (0 indexed)
+    #
+    # Then followed with either a dictionary/run length encoding, or Huffman coding.
+
+    day_count = int.from_bytes(encoded_bytes[0:2], 'big')
+    index = 2
+
+    day_entries = []
+    day_index = 0
+    while day_index < day_count:
+        day_id = int.from_bytes(encoded_bytes[index:index+2], 'big')
+        index += 2
+        day_type_id = int.from_bytes(encoded_bytes[index:index+2], 'big')
+        index += 2
+
+        day_values = decode_day_values(encoded_bytes[index:])
+
+def decode_day_values(encoded_bytes: list[int], start_index = 0) -> tuple[list[str], int]:
+    """Decodes the day values from the encoded bytes
+    Returns a list of strings, and the index of the next byte after the decoded values
+
+    """
+    encoding_type = encoded_bytes[start_index]
 
     if encoding_type == 0:
         # Dictionary encoding, followed by a run-length encoding
+
+        # - 1 byte: 0 to represent dictionary encoding
+        # - 1 byte: number of keys in dictionary (implying < 256 keys)
+        # - For each key:
+        #     - 1 byte: length of key 1
+        #     - n bytes: UTF-8 string key 1
+        # - 1 byte: number of values
+        # - For each value:
+        #     - 1 byte: length of run of key n, (implies no run > 255, may need to repeat if run > 255)
+        #     - 1 byte: key n, zero indexed
+
         keys = []
-        key_count = encoded_bytes[1]
-        index = 2
+        key_count = encoded_bytes[start_index + 1]
+        index = start_index + 2
         for _ in range(key_count):
             key_length = encoded_bytes[index]
             index += 1
             keys.append(bytes(encoded_bytes[index:index+key_length]).decode('utf-8'))
             index += key_length
 
+        num_values = encoded_bytes[index]
+
+        index += 1
         day_values = []
-        while index < len(encoded_bytes):
+        while len(day_values) < num_values:
             length = encoded_bytes[index]
             index += 1
             value = keys[encoded_bytes[index]]
             index += 1
+
             day_values.extend([value] * length)
 
-        return day_values
+        return day_values, index
 
     elif encoding_type == 1:
         # Huffman encoding
-        symbol_count = encoded_bytes[1]
-        index = 2
+        symbol_count = encoded_bytes[start_index + 1]
+        index = start_index + 2
 
         symbols = []
         huffman_code_lengths = []
@@ -392,11 +525,12 @@ def decode_day_values(encoded_bytes: list[int]) -> list[str]:
             symbol_dict[code_bits[code_index:code_index+length]] = symbol
             code_index += length
 
+        num_bits = int.from_bytes(encoded_bytes[index:index+huffman_bytes_for_bytes], 'big')
+        index += huffman_bytes_for_bytes
 
-        num_bits = int.from_bytes(encoded_bytes[index:index+3], 'big')
-        index += 3
+        num_bytes = num_bits // 8 + (1 if num_bits % 8 != 0 else 0)
 
-        data_bytes = encoded_bytes[index:]
+        data_bytes = encoded_bytes[index:index+num_bytes]
         data_bits = ''.join([f"{byte:08b}" for byte in data_bytes])
 
         day_values_chars: list[str] = []
@@ -407,7 +541,7 @@ def decode_day_values(encoded_bytes: list[int]) -> list[str]:
                 day_values_chars.append(symbol_dict[code])
                 code = ""
 
-        return "".join(day_values_chars).split("\x1E")
+        return "".join(day_values_chars).split("\x1E"), index + num_bytes
 
     else:
         raise ValueError("Unknown encoding type")
