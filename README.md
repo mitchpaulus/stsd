@@ -82,6 +82,8 @@ Each index record is:
 3. 2 byte: start day Id
 4. 2 byte: end day Id (inclusive)
 
+Total: 12 bytes per record
+
 Zero-padded after last record to page boundary.
 
 ### Data Page Format
@@ -91,7 +93,7 @@ Days can be compressed using either be a dictionary/run length encoding, or Huff
 
 Begins with
 
-- 2 bytes: total number of days in page
+- 2 bytes: Current number of bytes allocated
 
 For each encoded day:
 
@@ -112,6 +114,13 @@ Then followed with either a dictionary/run length encoding, or Huffman coding.
 - For each value:
     - 1 byte: length of run of key n, (implies no run > 255, may need to repeat if run > 255)
     - 1 byte: key n, zero indexed
+
+To get size:
+    - 2 byte for type encoding
+    - loop over keys:
+        - 1 byte for length
+        - n bytes for key
+    - Number of values * 2 bytes
 
 #### Huffman Coding
 

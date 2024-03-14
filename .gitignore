@@ -1,6 +1,9 @@
+.redo/
 .idea/
 __pycache__/
 
+diagram.svg
+init_test.db
 test.db
 test.py
 out.tsv

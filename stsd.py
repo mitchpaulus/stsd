@@ -5,6 +5,7 @@ from typing import Optional
 import sys
 import mputils
 import datetime
+import os
 
 huffman_bytes_for_bytes = 2
 
@@ -25,12 +26,14 @@ def init(filepath):
         # 4. 4 byte: number of day entries pages
         # 5. 4 byte: number of trends pages
         # 6. 4 byte: number of Index pages
+        # 6. 4 byte: number of Data pages
         version = 1
         page_size = 4096
         initial_year = 2000
         num_day_entries_pages = 0
         num_trends_pages = 0
         num_index_pages = 0
+        num_data_pages = 0
 
         file.write(version.to_bytes(2, 'big'))
         file.write(page_size.to_bytes(2, 'big'))
@@ -38,9 +41,33 @@ def init(filepath):
         file.write(num_day_entries_pages.to_bytes(4, 'big'))
         file.write(num_trends_pages.to_bytes(4, 'big'))
         file.write(num_index_pages.to_bytes(4, 'big'))
+        file.write(num_data_pages.to_bytes(4, 'big'))
 
         # Write null bytes to fill the rest of the page
-        file.write(b'\x00' * (page_size - 18))
+        file.write(b'\x00' * (page_size - 22))
+
+
+def print_summary(filepath):
+    with open(filepath, 'rb') as file:
+        configurations = file.read(18)
+
+    page_size = int.from_bytes(configurations[2:4], 'big')
+    init_year = int.from_bytes(configurations[4:6], 'big')
+    num_day_entries_pages = int.from_bytes(configurations[6:10], 'big')
+    num_trends_pages = int.from_bytes(configurations[10:14], 'big')
+    num_index_pages = int.from_bytes(configurations[14:18], 'big')
+    num_data_pages = int.from_bytes(configurations[18:22], 'big')
+
+    file_size = os.path.getsize(filepath)
+    total_num_pages = file_size // page_size
+    print(f"Page size: {page_size} bytes")
+    print(f"Initial year: {init_year}")
+    print(f"Number of day entries pages: {num_day_entries_pages}")
+    print(f"Number of trends pages: {num_trends_pages}")
+    print(f"Number of index pages: {num_index_pages}")
+    print(f"Number of data pages: {num_data_pages}")
+    print(f"Total number of pages: {total_num_pages}")
+    print(f"Total size: {file_size} bytes")
 
 
 def write_data(filepath, trend_name: str, values: list[tuple[datetime.datetime, str]]):
@@ -74,18 +101,23 @@ def write_data(filepath, trend_name: str, values: list[tuple[datetime.datetime, 
         trend_pages.append(all_index_pages[curr_pos:curr_pos+page_size])
         curr_pos += page_size
 
-    index_pages = []
+    index_page_start_pos = curr_pos
+
+    index_pages_bytes: list[bytes] = []
     for _ in range(num_index_pages):
-        index_pages.append(all_index_pages[curr_pos:curr_pos+page_size])
+        index_pages_bytes.append(all_index_pages[curr_pos:curr_pos+page_size])
         curr_pos += page_size
 
+    data_page_start_pos = curr_pos
+
+    # A list of (id, 180 byte day entry)
     day_entries: list[tuple[int, list[int]]] = [(idx, day) for idx, day in enumerate(read_day_entry_pages(day_entry_pages))]
     day_entries.sort(key=lambda x: x[1])
 
-    trends = read_trend_page(trend_pages)
-    indexes: list[DataIndex] = read_index_page(index_pages)
+    trends: dict[str, int] = read_trend_pages(trend_pages)
+    indexes: list[DataIndex] = read_index_page(index_pages_bytes)
 
-    indexes_for_trend = [x for x in indexes if x.trend_id == trends[trend_name]]
+    indexes_for_trend: list[DataIndex] = [x for x in indexes if x.trend_id == trends[trend_name]]
 
     if trend_name in trends:
         trend_id = trends[trend_name]
@@ -98,15 +130,16 @@ def write_data(filepath, trend_name: str, values: list[tuple[datetime.datetime, 
     day_entries_to_add = []
 
     for day in day_grouped:
+        # day is datetime.date
         # Get the day entry for the day
         day_type = to_day_entry([x[0] for x in day_grouped[day]])
-        day_index = match_day_entry(day_entries, day_type)
+        day_index: Optional[int] = match_day_entry(day_entries, day_type)
 
+        # toordinal, Jan 1, Year 1, is 1.
         day_id = day.toordinal() - init_nd_date + 1
 
         if day_index is None:
             # Add a new day entry
-            day_entries_to_add.append((day_type, day))
             day_entries_to_add.append((len(day_entries) + len(day_entries_to_add), day_type))
 
         encoded_values = encode_day_values([x[1] for x in day_grouped[day]])
@@ -114,12 +147,53 @@ def write_data(filepath, trend_name: str, values: list[tuple[datetime.datetime, 
         if len(encoded_values) > page_size:
             raise ValueError("Encoded values too large")
 
-        # Find the index page to write to
-        index_page = None
+        # Find the best index page to write to.
+        index_pages = []
+        latest_index: Optional[DataIndex] = None
         for index in indexes_for_trend:
+            if day_id > index.end_day and (latest_index is None or day_id - index.end_day < day_id - latest_index.end_day):
+                latest_index = index
+
             if index.start_day <= day.toordinal() - init_nd_date + 1 <= index.end_day:
-                index_page = index
+                index_pages.append(index)
                 break
+
+        if not index_pages:
+            # Try to see if it fits into latest existing page
+            if latest_index is not None:
+                data_page_start = data_page_start_pos + latest_index.page_index * page_size
+                file.seek(data_page_start)
+                # Read first two bytes
+                bytes_taken = int.from_bytes(file.read(2), 'big')
+
+                if bytes_taken + len(encoded_values) < page_size:
+                    # It fits
+                    # First write the number of bytes taken
+                    file.seek(data_page_start)
+                    file.write((bytes_taken + len(encoded_values)).to_bytes(2, 'big'))
+                    # Then move to end and write new data
+                    file.seek(data_page_start + bytes_taken)
+                    file.write(bytes(encoded_values))
+
+            else:
+                # Write the new index page info
+                if len(indexes) * 12 + 12 >= num_index_pages * page_size:
+                    raise ValueError("Index page too large. Not implemented yet.")
+                file.seek(index_page_start_pos + len(indexes) * 12)
+                file.write(trend_id.to_bytes(4, 'big'))
+                file.write(num_index_pages.to_bytes(4, 'big'))
+                file.write(day_id.to_bytes(2, 'big'))
+                file.write(day_id.to_bytes(2, 'big'))
+                indexes_for_trend.append(DataIndex(trend_id, num_index_pages, day_id, day_id))
+                indexes.append(DataIndex(trend_id, num_index_pages, day_id, day_id))
+
+                # Write the new data page
+                file.seek(data_page_start_pos + num_index_pages * page_size)
+                file.write(len(encoded_values).to_bytes(2, 'big'))
+                file.write(bytes(encoded_values))
+        else:
+            # We need to insert/overwrite the data in the existing page
+            raise ValueError("Not implemented yet")
 
 
 def to_day_entry(datetime_values: list[datetime.datetime]) -> list[int]:
@@ -182,16 +256,20 @@ def read_day_entry_pages(pages: list[bytes]) -> list[list[int]]:
             if page[pos_in_page] == 0:
                 break
             pos_in_page += 1
-            day_format = page[pos_in_page:pos_in_page+180]
+            day_type = page[pos_in_page:pos_in_page+180]
             pos_in_page += 180
-            day_entries.append(list(day_format))
+            day_entries.append(list(day_type))
     return day_entries
 
-def read_trend_page(pages: list[bytes]) -> dict[str, int]:
-    # 1. For each trend:
-    # - 4 byte: trend Id (Once set, should never change)
-    # - 256 bytes: trend name, UTF-8 encoded, padded with null bytes
-    # Zero filled after the last trend record
+
+def read_trend_pages(pages: list[bytes]) -> dict[str, int]:
+    """
+    For each trend:
+     - 4 byte: trend Id (Once set, should never change)
+     - 256 bytes: trend name, UTF-8 encoded, padded with null bytes
+    Zero filled after the last trend record
+    Returns: dictionary from trend name to integer trend id
+    """
     trends = {}
     pos_in_page = 0
     for page in pages:
@@ -561,8 +639,17 @@ if __name__ == "__main__":
                 sys.exit(1)
 
             init(sys.argv[arg_index + 1])
+            sys.exit(0)
+        elif sys.argv[arg_index] == "summary":
+            command = "summary"
 
-            arg_index += 2
+            if arg_index + 1 >= len(sys.argv):
+                print("Error: summary requires a file path")
+                sys.exit(1)
+
+            print_summary(sys.argv[arg_index + 1])
+
+            sys.exit(0)
         else:
             arg_index += 1
 
