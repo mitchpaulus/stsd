@@ -8,6 +8,19 @@ import datetime
 import os
 
 huffman_bytes_for_bytes = 2
+version_size_bytes = 2
+page_size_size_bytes = 2
+init_year_size_bytes = 2
+num_day_entries_pages_size_bytes = 4
+num_trends_pages_size_bytes = 4
+num_index_pages_size_bytes = 4
+num_data_pages_size_bytes = 4
+
+page_size = 4096
+
+trend_name_size_bytes = 124  # Bytes
+trend_id_size_bytes = 4  # Bytes
+
 
 class DataIndex:
     def __init__(self, trend_id: int, page_index: int, start_day: int, end_day: int) -> None:
@@ -16,35 +29,74 @@ class DataIndex:
         self.start_day = start_day
         self.end_day = end_day
 
+
 def init(filepath):
     # Fail if file already exists
     with open(filepath, 'xb') as file:
         # Write initial configuration
-        # 1. 2 byte: version number
-        # 2. 2 byte: page size in bytes
-        # 3. 2 byte: Initial year (default 2000)
-        # 4. 4 byte: number of day entries pages
-        # 5. 4 byte: number of trends pages
-        # 6. 4 byte: number of Index pages
-        # 6. 4 byte: number of Data pages
+        # 1. 2 byte: version number (0 - 2)
+        # 2. 2 byte: page size in bytes (2 - 4)
+        # 3. 2 byte: Initial year (default 2000) (4 - 6)
+        # 4. 4 byte: number of day entries pages (6 - 10)
+        # 5. 4 byte: number of trends pages (10 - 14)
+        # 6. 4 byte: number of Index pages (14 - 18)
+        # 6. 4 byte: number of Data pages (18 - 22)
         version = 1
-        page_size = 4096
         initial_year = 2000
         num_day_entries_pages = 0
         num_trends_pages = 0
         num_index_pages = 0
         num_data_pages = 0
 
-        file.write(version.to_bytes(2, 'big'))
-        file.write(page_size.to_bytes(2, 'big'))
-        file.write(initial_year.to_bytes(2, 'big'))
-        file.write(num_day_entries_pages.to_bytes(4, 'big'))
-        file.write(num_trends_pages.to_bytes(4, 'big'))
-        file.write(num_index_pages.to_bytes(4, 'big'))
-        file.write(num_data_pages.to_bytes(4, 'big'))
+        to_write = [
+            (version, version_size_bytes),
+            (page_size, page_size_size_bytes),
+            (initial_year, init_year_size_bytes),
+            (num_day_entries_pages, num_day_entries_pages_size_bytes),
+            (num_trends_pages, num_trends_pages_size_bytes),
+            (num_index_pages, num_index_pages_size_bytes),
+            (num_data_pages, num_data_pages_size_bytes),
+        ]
+
+        for value, num_bytes in to_write:
+            file.write(value.to_bytes(num_bytes, 'big'))
 
         # Write null bytes to fill the rest of the page
-        file.write(b'\x00' * (page_size - 22))
+        file.write(b'\x00' * (page_size - sum([x[1] for x in to_write])))
+
+
+def write_int(filepath, value: int, pos: int, num_bytes: int):
+    with open(filepath, 'rb+') as file:
+        file.seek(pos)
+        file.write(value.to_bytes(num_bytes, 'big'))
+
+
+def update_num_trend_pages(filepath, num_trends: int):
+    write_int(filepath, num_trends, 10, 4)
+
+
+def update_num_index_pages(filepath, num_indexes: int):
+    write_int(filepath, num_indexes, 14, 4)
+
+
+def update_num_data_pages(filepath, num_data: int):
+    write_int(filepath, num_data, 18, 4)
+
+
+def insert_blank_pages(filepath, page_index: int, num_pages: int):
+    # Write to temp file, then do os.rename
+    temp_filepath = filepath + ".tmp"
+
+    with open(temp_filepath, 'xb') as temp_file:
+        with open(filepath, 'rb') as file:
+            # Copy the first page_index pages
+            temp_file.write(file.read(page_index * page_size))
+            # Write the new pages
+            temp_file.write(b'\x00' * (page_size * num_pages))
+            # Copy the rest of the file
+            temp_file.write(file.read())
+
+    os.replace(temp_filepath, filepath)
 
 
 def print_summary(filepath):
@@ -75,125 +127,143 @@ def write_data(filepath, trend_name: str, values: list[tuple[datetime.datetime, 
     with open(filepath, 'rb+') as file:
         configurations = file.read(18)
 
-    page_size = int.from_bytes(configurations[2:4], 'big')
-    init_year = int.from_bytes(configurations[4:6], 'big')
-    num_day_entries_pages = int.from_bytes(configurations[6:10], 'big')
-    num_trends_pages = int.from_bytes(configurations[10:14], 'big')
-    num_index_pages = int.from_bytes(configurations[14:18], 'big')
+        page_size = int.from_bytes(configurations[2:4], 'big')
+        init_year = int.from_bytes(configurations[4:6], 'big')
+        num_day_entries_pages = int.from_bytes(configurations[6:10], 'big')
+        num_trends_pages = int.from_bytes(configurations[10:14], 'big')
+        num_index_pages = int.from_bytes(configurations[14:18], 'big')
 
-    total_size = page_size * (num_day_entries_pages + num_trends_pages + num_index_pages)
+        total_size = page_size * (num_day_entries_pages + num_trends_pages + num_index_pages)
 
-    init_nd_date = mputils.fixed_from_gregorian(init_year, 1, 1)
+        init_nd_date = mputils.fixed_from_gregorian(init_year, 1, 1)
 
-    file.seek(page_size)
+        file.seek(page_size)
 
-    # Read all the index pages
-    all_index_pages = file.read(total_size)
+        # Read all the index pages
+        all_index_pages = file.read(total_size)
+        curr_pos = 0
 
-    day_entry_pages = []
-    curr_pos = 0
-    for _ in range(num_day_entries_pages):
-        day_entry_pages.append(all_index_pages[curr_pos:curr_pos+page_size])
-        curr_pos += page_size
+        trend_pages = []
+        for _ in range(num_trends_pages):
+            trend_pages.append(all_index_pages[curr_pos:curr_pos + page_size])
+            curr_pos += page_size
 
-    trend_pages = []
-    for _ in range(num_trends_pages):
-        trend_pages.append(all_index_pages[curr_pos:curr_pos+page_size])
-        curr_pos += page_size
-
-    index_page_start_pos = curr_pos
-
-    index_pages_bytes: list[bytes] = []
-    for _ in range(num_index_pages):
-        index_pages_bytes.append(all_index_pages[curr_pos:curr_pos+page_size])
-        curr_pos += page_size
-
-    data_page_start_pos = curr_pos
-
-    # A list of (id, 180 byte day entry)
-    day_entries: list[tuple[int, list[int]]] = [(idx, day) for idx, day in enumerate(read_day_entry_pages(day_entry_pages))]
-    day_entries.sort(key=lambda x: x[1])
-
-    trends: dict[str, int] = read_trend_pages(trend_pages)
-    indexes: list[DataIndex] = read_index_page(index_pages_bytes)
-
-    indexes_for_trend: list[DataIndex] = [x for x in indexes if x.trend_id == trends[trend_name]]
-
-    if trend_name in trends:
-        trend_id = trends[trend_name]
-    else:
-        trend_id = max(trends.values(), default=0) + 1
-
-    # Group data by day
-    day_grouped: dict[datetime.date, list[tuple[datetime.datetime, str]]] = mputils.groupby(values, lambda x: x[0].date())
-
-    day_entries_to_add = []
-
-    for day in day_grouped:
-        # day is datetime.date
-        # Get the day entry for the day
-        day_type = to_day_entry([x[0] for x in day_grouped[day]])
-        day_index: Optional[int] = match_day_entry(day_entries, day_type)
-
-        # toordinal, Jan 1, Year 1, is 1.
-        day_id = day.toordinal() - init_nd_date + 1
-
-        if day_index is None:
-            # Add a new day entry
-            day_entries_to_add.append((len(day_entries) + len(day_entries_to_add), day_type))
-
-        encoded_values = encode_day_values([x[1] for x in day_grouped[day]])
-
-        if len(encoded_values) > page_size:
-            raise ValueError("Encoded values too large")
-
-        # Find the best index page to write to.
-        index_pages = []
-        latest_index: Optional[DataIndex] = None
-        for index in indexes_for_trend:
-            if day_id > index.end_day and (latest_index is None or day_id - index.end_day < day_id - latest_index.end_day):
-                latest_index = index
-
-            if index.start_day <= day.toordinal() - init_nd_date + 1 <= index.end_day:
-                index_pages.append(index)
-                break
-
-        if not index_pages:
-            # Try to see if it fits into latest existing page
-            if latest_index is not None:
-                data_page_start = data_page_start_pos + latest_index.page_index * page_size
-                file.seek(data_page_start)
-                # Read first two bytes
-                bytes_taken = int.from_bytes(file.read(2), 'big')
-
-                if bytes_taken + len(encoded_values) < page_size:
-                    # It fits
-                    # First write the number of bytes taken
-                    file.seek(data_page_start)
-                    file.write((bytes_taken + len(encoded_values)).to_bytes(2, 'big'))
-                    # Then move to end and write new data
-                    file.seek(data_page_start + bytes_taken)
-                    file.write(bytes(encoded_values))
-
-            else:
-                # Write the new index page info
-                if len(indexes) * 12 + 12 >= num_index_pages * page_size:
-                    raise ValueError("Index page too large. Not implemented yet.")
-                file.seek(index_page_start_pos + len(indexes) * 12)
-                file.write(trend_id.to_bytes(4, 'big'))
-                file.write(num_index_pages.to_bytes(4, 'big'))
-                file.write(day_id.to_bytes(2, 'big'))
-                file.write(day_id.to_bytes(2, 'big'))
-                indexes_for_trend.append(DataIndex(trend_id, num_index_pages, day_id, day_id))
-                indexes.append(DataIndex(trend_id, num_index_pages, day_id, day_id))
-
-                # Write the new data page
-                file.seek(data_page_start_pos + num_index_pages * page_size)
-                file.write(len(encoded_values).to_bytes(2, 'big'))
-                file.write(bytes(encoded_values))
+        # Check if we need a new trend page
+        trends: dict[str, int] = read_trend_pages(trend_pages)
+        if trend_name in trends:
+            trend_id = trends[trend_name]
         else:
-            # We need to insert/overwrite the data in the existing page
-            raise ValueError("Not implemented yet")
+            trend_id = max(trends.values(), default=0) + 1
+            num_trends = len(trends)
+
+            if (num_trends + 1) * (trend_name_size_bytes + trend_id_size_bytes) >= num_trends_pages * page_size:
+                file.close()
+                insert_blank_pages(filepath, 1 + num_trends_pages, 1)
+                update_num_trend_pages(filepath, num_trends_pages + 1)
+                # Recursively start over
+                write_data(filepath, trend_name, values)
+                return
+
+        day_entry_pages = []
+        for _ in range(num_day_entries_pages):
+            day_entry_pages.append(all_index_pages[curr_pos:curr_pos + page_size])
+            curr_pos += page_size
+
+        index_page_start_pos = curr_pos
+        index_pages_bytes: list[bytes] = []
+        for _ in range(num_index_pages):
+            index_pages_bytes.append(all_index_pages[curr_pos:curr_pos + page_size])
+            curr_pos += page_size
+
+        data_page_start_pos = curr_pos
+
+        # A list of (id, 180 byte day entry)
+        day_entries: list[tuple[int, list[int]]] = [(idx, day) for idx, day in
+                                                    enumerate(read_day_entry_pages(day_entry_pages))]
+        day_entries.sort(key=lambda x: x[1])
+
+        indexes: list[DataIndex] = read_index_page(index_pages_bytes)
+
+        indexes_for_trend: list[DataIndex] = [x for x in indexes if x.trend_id == trends[trend_name]]
+
+        # Group data by day
+        day_grouped: dict[datetime.date, list[tuple[datetime.datetime, str]]] = mputils.groupby(values,
+                                                                                                lambda x: x[0].date())
+
+        day_entries_to_add = []
+
+        for day in day_grouped:
+            # day is datetime.date
+            # Get the day entry for the day
+            day_type = to_day_entry([x[0] for x in day_grouped[day]])
+            day_index: Optional[int] = match_day_entry(day_entries, day_type)
+
+            if day_index is None:
+                # Add a new day entry
+                day_entries_to_add.append((len(day_entries) + len(day_entries_to_add), day_type))
+
+            # toordinal, Jan 1, Year 1, is 1.
+            day_id = day.toordinal() - init_nd_date + 1
+
+            encoded_values = encode_day_values([x[1] for x in day_grouped[day]])
+
+            if len(encoded_values) > page_size:
+                raise ValueError("Encoded values too large")
+
+            # Find the best index page to write to.
+            index_pages = []
+            latest_index: Optional[DataIndex] = None
+            for index in indexes_for_trend:
+                if day_id > index.end_day and (
+                        latest_index is None or day_id - index.end_day < day_id - latest_index.end_day):
+                    latest_index = index
+
+                if index.start_day <= day.toordinal() - init_nd_date + 1 <= index.end_day:
+                    index_pages.append(index)
+                    break
+
+            if not index_pages:
+                # Try to see if it fits into latest existing page
+                if latest_index is not None:
+                    data_page_start = data_page_start_pos + latest_index.page_index * page_size
+                    file.seek(data_page_start)
+                    # Read first two bytes
+                    bytes_taken = int.from_bytes(file.read(2), 'big')
+
+                    if bytes_taken + len(encoded_values) < page_size:
+                        # It fits
+                        # First write the number of bytes taken
+                        file.seek(data_page_start)
+                        file.write((bytes_taken + len(encoded_values)).to_bytes(2, 'big'))
+                        # Then move to end and write new data
+                        file.seek(data_page_start + bytes_taken)
+                        file.write(bytes(encoded_values))
+
+                else:
+                    # Write the new index page info
+                    if len(indexes) * 12 + 12 >= num_index_pages * page_size:
+                        file.close()
+                        insert_blank_pages(filepath, 1 + num_trends_pages + num_day_entries_pages + num_index_pages, 1)
+                        update_num_index_pages(filepath, num_index_pages + 1)
+                        # Recursively start over
+                        write_data(filepath, trend_name, values)
+                        return
+
+                    file.seek(index_page_start_pos + len(indexes) * 12)
+                    file.write(trend_id.to_bytes(4, 'big'))
+                    file.write(num_index_pages.to_bytes(4, 'big'))
+                    file.write(day_id.to_bytes(2, 'big'))
+                    file.write(day_id.to_bytes(2, 'big'))
+                    indexes_for_trend.append(DataIndex(trend_id, num_index_pages, day_id, day_id))
+                    indexes.append(DataIndex(trend_id, num_index_pages, day_id, day_id))
+
+                    # Write the new data page
+                    file.seek(data_page_start_pos + num_index_pages * page_size)
+                    file.write(len(encoded_values).to_bytes(2, 'big'))
+                    file.write(bytes(encoded_values))
+            else:
+                # We need to insert/overwrite the data in the existing page
+                raise ValueError("Not implemented yet")
 
 
 def to_day_entry(datetime_values: list[datetime.datetime]) -> list[int]:
@@ -205,6 +275,7 @@ def to_day_entry(datetime_values: list[datetime.datetime]) -> list[int]:
         day_values[minute // 8] |= 1 << (minute % 8)
 
     return day_values
+
 
 def day_compare(day1: list[int], day2: list[int]) -> int:
     # Return 0 if the days are equal, -1 if day1 < day2, 1 if day1 > day2
@@ -223,6 +294,7 @@ def day_compare(day1: list[int], day2: list[int]) -> int:
         return 1
     else:
         return 0
+
 
 def match_day_entry(day_entries: list[tuple[int, list[int]]], day_times: list[int]) -> Optional[int]:
     # list[int] represents the byte array where each bit is a minute of the day
@@ -256,7 +328,7 @@ def read_day_entry_pages(pages: list[bytes]) -> list[list[int]]:
             if page[pos_in_page] == 0:
                 break
             pos_in_page += 1
-            day_type = page[pos_in_page:pos_in_page+180]
+            day_type = page[pos_in_page:pos_in_page + 180]
             pos_in_page += 180
             day_entries.append(list(day_type))
     return day_entries
@@ -265,8 +337,8 @@ def read_day_entry_pages(pages: list[bytes]) -> list[list[int]]:
 def read_trend_pages(pages: list[bytes]) -> dict[str, int]:
     """
     For each trend:
-     - 4 byte: trend Id (Once set, should never change)
-     - 256 bytes: trend name, UTF-8 encoded, padded with null bytes
+     - 4 byte: trend Id (Once set, should never change). Starts at 1.
+     - 124 bytes: trend name, UTF-8 encoded, padded with null bytes
     Zero filled after the last trend record
     Returns: dictionary from trend name to integer trend id
     """
@@ -274,15 +346,17 @@ def read_trend_pages(pages: list[bytes]) -> dict[str, int]:
     pos_in_page = 0
     for page in pages:
         while pos_in_page < len(page):
-            trend_id = int.from_bytes(page[pos_in_page:pos_in_page+4], 'big')
+            trend_id = int.from_bytes(page[pos_in_page:pos_in_page + 4], 'big')
             if trend_id == 0:
                 break
             pos_in_page += 4
-            trend_name = page[pos_in_page:pos_in_page+256].decode('utf-8').rstrip('\x00')
-            pos_in_page += 256
+            trend_name = page[pos_in_page:pos_in_page + trend_name_size].decode('utf-8').rstrip('\x00')
+            pos_in_page += trend_name_size
 
             trends[trend_name] = trend_id
+
     return trends
+
 
 def read_index_page(pages: list[bytes]) -> list[DataIndex]:
     # Each index record is:
@@ -296,20 +370,21 @@ def read_index_page(pages: list[bytes]) -> list[DataIndex]:
     pos_in_page = 0
     for page in pages:
         while pos_in_page < len(page):
-            trend_id = int.from_bytes(page[pos_in_page:pos_in_page+4], 'big')
+            trend_id = int.from_bytes(page[pos_in_page:pos_in_page + 4], 'big')
             if trend_id == 0:
                 break
             pos_in_page += 4
-            page_index = int.from_bytes(page[pos_in_page:pos_in_page+4], 'big')
+            page_index = int.from_bytes(page[pos_in_page:pos_in_page + 4], 'big')
             pos_in_page += 4
-            start_day = int.from_bytes(page[pos_in_page:pos_in_page+2], 'big')
+            start_day = int.from_bytes(page[pos_in_page:pos_in_page + 2], 'big')
             pos_in_page += 2
-            end_day = int.from_bytes(page[pos_in_page:pos_in_page+2], 'big')
+            end_day = int.from_bytes(page[pos_in_page:pos_in_page + 2], 'big')
             pos_in_page += 2
 
             indexes.append(DataIndex(trend_id, page_index, start_day, end_day))
 
     return indexes
+
 
 class Node:
     def __init__(self, char, freq):
@@ -342,6 +417,7 @@ def build_huffman_tree_from_dict(frequency_dict: dict[str, int]):
     # The remaining element is the root of the Huffman tree
     return priority_queue[0]
 
+
 def build_huffman_tree(text):
     # Count frequency of appearance of each character
     frequency = Counter(text)
@@ -357,6 +433,7 @@ def generate_codes(node, prefix="", code=None):
         generate_codes(node.left, prefix + "0", code)
         generate_codes(node.right, prefix + "1", code)
     return code
+
 
 def huffman_encoding(text):
     # Build Huffman Tree
@@ -378,7 +455,7 @@ def str_to_bytes(s: str) -> list[int]:
     # Zero pad to right multiple of 8
     s += '0' * ((8 - len(s) % 8) % 8)
     for i in range(0, len(s), 8):
-        output_bytes.append(int(s[i:i+8], 2))
+        output_bytes.append(int(s[i:i + 8], 2))
     return output_bytes
 
 
@@ -392,6 +469,7 @@ bit_strings = {
     6: '110',
     7: '111'
 }
+
 
 def encode_day_values(day_values: list[str]) -> list[int]:
     key_counts = {}
@@ -524,14 +602,15 @@ def decode_data_page(encoded_bytes: list[int]) -> list[tuple[datetime.datetime, 
     day_entries = []
     day_index = 0
     while day_index < day_count:
-        day_id = int.from_bytes(encoded_bytes[index:index+2], 'big')
+        day_id = int.from_bytes(encoded_bytes[index:index + 2], 'big')
         index += 2
-        day_type_id = int.from_bytes(encoded_bytes[index:index+2], 'big')
+        day_type_id = int.from_bytes(encoded_bytes[index:index + 2], 'big')
         index += 2
 
         day_values = decode_day_values(encoded_bytes[index:])
 
-def decode_day_values(encoded_bytes: list[int], start_index = 0) -> tuple[list[str], int]:
+
+def decode_day_values(encoded_bytes: list[int], start_index=0) -> tuple[list[str], int]:
     """Decodes the day values from the encoded bytes
     Returns a list of strings, and the index of the next byte after the decoded values
 
@@ -557,7 +636,7 @@ def decode_day_values(encoded_bytes: list[int], start_index = 0) -> tuple[list[s
         for _ in range(key_count):
             key_length = encoded_bytes[index]
             index += 1
-            keys.append(bytes(encoded_bytes[index:index+key_length]).decode('utf-8'))
+            keys.append(bytes(encoded_bytes[index:index + key_length]).decode('utf-8'))
             index += key_length
 
         num_values = encoded_bytes[index]
@@ -585,13 +664,13 @@ def decode_day_values(encoded_bytes: list[int], start_index = 0) -> tuple[list[s
         for _ in range(symbol_count):
             length = encoded_bytes[index]
             index += 1
-            symbols.append(bytes(encoded_bytes[index:index+length]).decode('utf-8'))
+            symbols.append(bytes(encoded_bytes[index:index + length]).decode('utf-8'))
             index += length
             huffman_code_lengths.append(encoded_bytes[index])
-            index+=1
+            index += 1
 
         num_bytes_required_for_codes = math.ceil(sum(huffman_code_lengths) / 8)
-        code_bytes = encoded_bytes[index:index+num_bytes_required_for_codes]
+        code_bytes = encoded_bytes[index:index + num_bytes_required_for_codes]
         index += num_bytes_required_for_codes
 
         code_bits: str = ''.join([f"{code:08b}" for code in code_bytes])
@@ -600,15 +679,15 @@ def decode_day_values(encoded_bytes: list[int], start_index = 0) -> tuple[list[s
         code_index = 0
         for i, symbol in enumerate(symbols):
             length = huffman_code_lengths[i]
-            symbol_dict[code_bits[code_index:code_index+length]] = symbol
+            symbol_dict[code_bits[code_index:code_index + length]] = symbol
             code_index += length
 
-        num_bits = int.from_bytes(encoded_bytes[index:index+huffman_bytes_for_bytes], 'big')
+        num_bits = int.from_bytes(encoded_bytes[index:index + huffman_bytes_for_bytes], 'big')
         index += huffman_bytes_for_bytes
 
         num_bytes = num_bits // 8 + (1 if num_bits % 8 != 0 else 0)
 
-        data_bytes = encoded_bytes[index:index+num_bytes]
+        data_bytes = encoded_bytes[index:index + num_bytes]
         data_bits = ''.join([f"{byte:08b}" for byte in data_bytes])
 
         day_values_chars: list[str] = []
@@ -623,7 +702,6 @@ def decode_day_values(encoded_bytes: list[int], start_index = 0) -> tuple[list[s
 
     else:
         raise ValueError("Unknown encoding type")
-
 
 
 if __name__ == "__main__":

@@ -41,8 +41,8 @@ Given:
 
 Database is broken up into pages of 4 kB.
 First page is configuration.
-Next pages are day type pages.
 Next pages are trend definition pages.
+Next pages are day type pages.
 Next pages are Index pages.
 Next pages are data pages.
 
@@ -57,14 +57,6 @@ I want to format of the data on disk to be as simple as possible.
 5. 4 byte: number of trends pages
 6. 4 byte: number of Index pages
 
-### Day Type Page
-
-1. For each day entry:
-    - 1 byte: non-zero byte to indicate following 180 bits are good
-    - 180 bytes: day format. Bit string of 1440 bits, 1 for each minute of the day.
-
-Zero-padded after last record to page boundary.
-
 ### Trend Definition Page
 
 1. For each trend:
@@ -72,6 +64,14 @@ Zero-padded after last record to page boundary.
     - 256 bytes: trend name, UTF-8 encoded, padded with null bytes
 
 One-padded (to allow id to act as zero-index) after last record to page boundary.
+
+### Day Type Page
+
+1. For each day entry:
+    - 1 byte: non-zero byte to indicate following 180 bits are good
+    - 180 bytes: day format. Bit string of 1440 bits, 1 for each minute of the day.
+
+Zero-padded after last record to page boundary.
 
 ### Index Page
 

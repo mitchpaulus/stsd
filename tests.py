@@ -67,7 +67,26 @@ def test3():
     assert len(day_time_values) == 180, f"Expected 180 but got {len(day_time_values)}"
 
 
+def init_test():
+    stsd.init(f"{datetime.datetime.now().isoformat()}.db")
+
+
+def write_test():
+    # Write to file YYYY-mm-dd HHmm.db
+    date = datetime.datetime.now()
+    file = f'{date.strftime("%Y-%m-%d %H%M")}.db'
+    stsd.init(file)
+
+    values = []
+    for i in range(24):
+        values.append(((2024, 3, 21, i, 0), i))
+
+    values = [(datetime.datetime(*v[0]), str(v[1])) for v in values]
+    stsd.write_data(file, "Trend 1", values)
+
 if __name__ == "__main__":
-    test1()
-    test2()
+    write_test()
+
+    #  test1()
+    #  test2()
     #  test3()
