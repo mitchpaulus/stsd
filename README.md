@@ -3,11 +3,10 @@
 I've needed an extremely simple time series database for my own needs.
 It is designed around these principles:
 
-- I only need minute precision
+- I only need second precision
 - It's only a simple string lookup by name
 - I'm only querying by days at a time
 - Concurrent traffic is extremely low
-- Can do some simple operations using common text processing utilities
 - Compression has to just be "good" enough
 - Data is normally appended
 
@@ -62,6 +61,7 @@ I want to format of the data on disk to be as simple as possible.
 1. For each trend:
     - 4 byte: trend Id (Once set, should never change)
     - 256 bytes: trend name, UTF-8 encoded, padded with null bytes
+    - 1 byte: trend type: interval, COV, Accumulator
 
 One-padded (to allow id to act as zero-index) after last record to page boundary.
 
